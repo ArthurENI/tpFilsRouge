@@ -1,0 +1,11 @@
+﻿{
+  "agentId": 2,
+  "agentName": "50SE31-HN5HHZ3",
+  "poolId": 1,
+  "poolName": "Default",
+  "serverUrl": "https://pipelinesghubeus5.actions.githubusercontent.com/xlP5vhSzL4Mqhsv7QPNYXw6YIVgDKkRSBiOqWNpW1EPzEdgxfE/",
+  "gitHubUrl": "https://github.com/ArthurENI/tpFilsRouge",
+  "workFolder": "_work",
+  "useV2Flow": true,
+  "serverUrlV2": "https://broker.actions.githubusercontent.com/"
+}

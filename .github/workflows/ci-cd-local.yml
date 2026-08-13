@@ -1,0 +1,199 @@
+name: ci-cd-lical
+on:
+  push:
+    branches:
+      - main
+  pull-request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MYSQL_DATABASE: ${{ secrets.DB_NAME }}
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_DIALECT: mysql
+      PORT: 3000
+
+    steps:
+    - name: Checkout du code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: npm
+
+    - name: Installer les dépendances
+      run: npm ci
+
+    - name: Lancer les tests unitaires + intégration
+      run: npm test
+
+  # ---------------------------------------------------------------
+  # Job 2 : build + déploiement local via docker compose + smoke test
+  # Ne se déclenche QUE sur push vers main, ET seulement si "test" a réussi
+  # (needs: test => si test échoue, ce job est automatiquement skippé)
+  # ---------------------------------------------------------------
+  build-and-deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    env:
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Build + démarrage via docker compose
+        run: docker compose up -d --build
+
+      - name: Attendre le démarrage du backend
+        run: sleep 10
+
+      - name: Smoke test HTTP
+        run: |
+          curl -sf http://localhost:3000/api/tasks || {
+            echo "Smoke test échoué, logs du backend :"
+            docker compose logs app
+            exit 1
+          }
+
+      - name: Nettoyage
+        if: always()
+        run: docker compose down -v
+
+
+
+
+# name: CI/CD Local
+
+# on:
+#   pull_request:
+#     branches: [main]
+#   push:
+#     branches: [main]
+
+# jobs:
+#   # ---------------------------------------------------------------
+#   # Job 1 : tests unitaires + intégration avec MySQL éphémère
+#   # Se déclenche sur PR vers main ET sur push vers main
+#   # ---------------------------------------------------------------
+#   test:
+#     runs-on: ubuntu-latest
+
+#     services:
+#       db:
+#         image: mysql:5.7
+#         env:
+#           MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
+#           MYSQL_DATABASE: ${{ secrets.DB_NAME }}
+#         ports:
+#           - 3306:3306
+#         options: >-
+#           --health-cmd="mysqladmin ping -h localhost"
+#           --health-interval=5s
+#           --health-timeout=5s
+#           --health-retries=10
+
+#     env:
+#       DB_HOST: 127.0.0.1
+#       DB_USER: ${{ secrets.DB_USER }}
+#       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+#       DB_NAME: ${{ secrets.DB_NAME }}
+#       DB_DIALECT: mysql
+#       PORT: 3000
+
+#     steps:
+#       - name: Checkout du code
+#         uses: actions/checkout@v4
+
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: '20'
+#           cache: npm
+
+#       - name: Installer les dépendances
+#         run: npm ci
+
+#       - name: Attendre que MySQL soit prêt
+#         run: |
+#           until mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -p"$DB_PASSWORD" --silent; do
+#             echo "En attente de MySQL..."
+#             sleep 2
+#           done
+
+#       - name: Lancer les tests unitaires + intégration
+#         run: npm test
+
+#   # ---------------------------------------------------------------
+#   # Job 2 : build + déploiement local via docker compose + smoke test
+#   # Ne se déclenche QUE sur push vers main, ET seulement si "test" a réussi
+#   # (needs: test => si test échoue, ce job est automatiquement skippé)
+#   # ---------------------------------------------------------------
+#   build-and-deploy:
+#     needs: test
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#     runs-on: ubuntu-latest
+
+#     env:
+#       DB_USER: ${{ secrets.DB_USER }}
+#       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+#       DB_NAME: ${{ secrets.DB_NAME }}
+
+#     steps:
+#       - name: Checkout du code
+#         uses: actions/checkout@v4
+
+#       - name: Build + démarrage via docker compose
+#         run: docker compose up -d --build
+
+#       - name: Attendre que l'appli et sa DB soient healthy
+#         run: |
+#           for i in $(seq 1 30); do
+#             status=$(docker inspect --format='{{.State.Health.Status}}' mysql-container 2>/dev/null || echo "starting")
+#             if [ "$status" = "healthy" ]; then
+#               echo "DB healthy."
+#               break
+#             fi
+#             echo "En attente de la DB ($status)..."
+#             sleep 3
+#           done
+
+#       - name: Attendre le démarrage du backend
+#         run: sleep 10
+
+#       - name: Smoke test HTTP
+#         run: |
+#           curl -sf http://localhost:3000/api/tasks || {
+#             echo "Smoke test échoué, logs du backend :"
+#             docker compose logs app
+#             exit 1
+#           }
+
+#       - name: Nettoyage
+#         if: always()
+#         run: docker compose down -v
