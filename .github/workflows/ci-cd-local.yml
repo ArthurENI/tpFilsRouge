@@ -48,7 +48,7 @@ jobs:
     - name: Lancer les tests unitaires + intégration
       run: npm test
 
-  # ---------------------------------------------------------------
+   # ---------------------------------------------------------------
   # Job 2 : build + déploiement local via docker compose + smoke test
   # Ne se déclenche QUE sur push vers main, ET seulement si "test" a réussi
   # (needs: test => si test échoue, ce job est automatiquement skippé)
@@ -57,22 +57,23 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-
+ 
     env:
+      DB_HOST: db
       DB_USER: ${{ secrets.DB_USER }}
       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       DB_NAME: ${{ secrets.DB_NAME }}
-
+ 
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
-
+ 
       - name: Build + démarrage via docker compose
         run: docker compose up -d --build
-
+ 
       - name: Attendre le démarrage du backend
         run: sleep 10
-
+ 
       - name: Smoke test HTTP
         run: |
           curl -sf http://localhost:3000/api/tasks || {
@@ -80,7 +81,7 @@ jobs:
             docker compose logs app
             exit 1
           }
-
+ 
       - name: Nettoyage
         if: always()
         run: docker compose down -v
