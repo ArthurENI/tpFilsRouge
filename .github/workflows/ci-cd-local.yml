@@ -1,4 +1,13 @@
-name: ci-cd-lical
+#-----------------------------------------------------------------------
+# CI/CD - Local Deploy (Runner)
+# name définit le nom du workflow qui sera affiché dans l'onglet "Actions" de GitHub
+# CI = Continuous Integration (Intégration Continue) lancer automatiquement les tests unitaires et d'intégration
+# CD = Continuous Deployment (Déploiement Continu) construire automatiquement l'image Docker 
+# et la déployer sur un environnement de test local (runner) avec l'application et la base de données MySQL
+#-----------------------------------------------------------------------
+name: CI/CD - Local Deploy (Runner)
+
+# Quand le Workflow doit-il être déclenché ? Ici, à chaque push ou pull request sur la branche main
 on:
   push:
     branches:
@@ -7,104 +16,373 @@ on:
     branches:
       - main
 
+# Définition des variables d'environnement utilisées dans le workflow
+env:
+  # Variables d'environnement pour la base de données MySQL et l'application
+  # DB_HOST: indique à l'application où se trouve la base de données MySQL. 
+  # Ici, on utilise l'adresse IP car dans le job test, MySQL est un service Docker lancer comme Service GitHub Actions et non un conteneur séparé.
+  DB_HOST: 127.0.0.1
+  
+  # L'utilisation de root pour l'utilisateur et le mot de passe est uniquement pour les tests locaux.
+  # Pour un projet réel, on éviterait de mettre un mot de passe directement dans le fichier YAML et on utiliserait plutôt les GitHub Secrets.
+  DB_USER: root
+  DB_PASSWORD: root
+  DB_NAME: todolist_db
+  DB_DIALECT: mysql
+  # Le serveur node de l'application écoute sur le port 3000 
+  #et on définit l'environnement comme test pour que l'application utilise la base de données de test.
+  PORT: 3000
+  NODE_ENV: test
+
+  # Dans notre fichier nous avons 3 jobs : test, build et deploy_local.
 jobs:
+
+  # ============================================================
+  # 1. TESTS
+  # ============================================================
   test:
+    # C'est le nom qui sera affiché dans GitHub Actions.
+    # Cela indique que ce job exécute :
+    # les tests unitaires ;
+    # les tests d'intégration.
+    name: "Tests (Jest: unit + integration)"
+    # GitHub démarre une machine virtuelle Ubuntu pour exécuter le job.
+    # Tu peux voir ça comme : GitHub -> Machine virtuelle Ubuntu -> exécuter les commandes du job ici des tests.
     runs-on: ubuntu-latest
+
+    # GitHub Actions fournit un service MySQL 5.7 pour ce job, qui sera utilisé par l'application pour les tests d'intégration.
+    # Le service MySQL est un conteneur Docker qui sera lancé automatiquement par GitHub Actions avant d'exécuter les étapes du job.
+    # Le service MySQL est configuré avec le mot de passe root et la base de données todolist_db. 
+    # Le port 3306 est exposé pour que l'application puisse se connecter à la base de données.  
     services:
-      db:
+      mysql:
         image: mysql:5.7
         env:
-          MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          MYSQL_DATABASE: ${{ secrets.DB_NAME }}
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: todolist_db
+        # Le port 3306 est exposé pour que l'application puisse se connecter à la base de données.
+        # Machine virtuelle Ubuntu (runner) -> conteneur MySQL -> port 3306
+        # Le premier est le port de la machine virtuelle (runner) et le second est le port du conteneur MySQL.  
         ports:
           - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost"
+        # Le health check est une commande qui vérifie si le service MySQL est prêt à accepter les connexions.
+        # options: >- permet de définir plusieurs options pour le health check 
+        # et surtout d'écrire la commande sur plusieurs lignes pour plus de lisibilité.
+        # Docker vérifie régulièrement si MySQL répond. 
+        # Docker effectue le contrôle toutes les : 5 secondes, avec un délai d'attente de 5 secondes pour chaque tentative,
+        # et réessaie jusqu'à 20 fois avant de considérer le service comme non disponible.
+        options: >- 
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -proot"
           --health-interval=5s
           --health-timeout=5s
-          --health-retries=10
-
-    env:
-      DB_HOST: 127.0.0.1
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_DIALECT: mysql
-      PORT: 3000
-
+          --health-retries=20
+   
+    # Cette section contient les étapes à exécuter dans le job. 
+    # Chaque étape peut être une action GitHub ou une commande shell.      
     steps:
-    - name: Checkout du code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: npm
-
-    - name: Installer les dépendances
-      run: npm ci
-
-    - name: Lancer les tests unitaires + intégration
-      run: npm test
-
-   # ---------------------------------------------------------------
-  # Job 2 : build + déploiement local via docker compose + smoke test
-  # Ne se déclenche QUE sur push vers main, ET seulement si "test" a réussi
-  # (needs: test => si test échoue, ce job est automatiquement skippé)
-  # ---------------------------------------------------------------
-  build-and-deploy:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
- 
-    env:
-      DB_HOST: db
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-      DB_NAME: ${{ secrets.DB_NAME }}
- 
-    steps:
-      - name: Checkout du code
+      # actions/checkout@v4 est une Action officielle permettant de récupérer ton repository.
+      # Sans elle, la machine Ubuntu ne possède pas ton code.
+      - name: Checkout code
         uses: actions/checkout@v4
- 
-      - name: Build + démarrage via docker compose
-        run: docker compose up -d --build
- 
-      - name: Attendre le démarrage du backend
-        run: sleep 10
- 
-      - name: Smoke test HTTP
+
+      # Installation de Node.js 18 et mise en cache des dépendances npm pour accélérer les builds.
+      - name: Set up Node.js 18 + npm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          # GitHub peut mettre en cache les dépendances npm. Cela permet d'accélérer les futurs workflows.
+          cache: "npm"
+          # GitHub utilise package-lock.json pour déterminer si les dépendances ont changé.
+          cache-dependency-path: package-lock.json
+      
+      # npm ci installe exactement les versions présentes dans package-lock.json.
+      # Pour un pipeline CI, npm ci est généralement préférable à : npm install, 
+      # car il est plus rapide et garantit que l'environnement de test est identique à celui de développement.
+      - name: Install dependencies
+        run: npm ci
+      
+      # On crée une étape qui attend que MySQL soit réellement prêt avant de lancer les tests.
+      - name: Wait for MySQL to be ready
+      # run: | signifie : Les lignes suivantes sont des commandes shell.
+      # Affiche un message dans les logs.
+      # On utilise :
+      # host : 127.0.0.1
+      # user : root
+      # password : root
+      # --silent : réduit les messages inutiles.
         run: |
-          curl -sf http://localhost:3000/api/tasks || {
-            echo "Smoke test échoué, logs du backend :"
-            docker compose logs app
-            exit 1
-          }
- 
-      - name: Nettoyage
+          echo "Waiting for MySQL to be ready..."
+
+          for i in {1..30}; do
+            if mysqladmin ping \
+              -h 127.0.0.1 \
+              -u root \
+              -proot \
+              --silent; then
+
+              echo "MySQL is ready!"
+              exit 0
+            fi
+
+            echo "Waiting for MySQL... ($i/30)"
+            sleep 2
+          done
+
+          echo "MySQL did not become ready in time."
+          exit 1
+      
+      # La dernière étape exécute les tests unitaires et d'intégration avec la commande npm test.
+      - name: Run tests
+        run: npm test
+
+
+  # ============================================================
+  # 2. BUILD DOCKER IMAGE
+  #  docker build -> docker save 
+  # -> upload artifact (projet-fil-rouge.tar) -> upload artifact
+  # ============================================================
+  build:
+    name: "Build Docker Image"
+    # Une nouvelle machine Ubuntu est créée. C'est très important. Le job build n'utilise pas la même machine que test.
+    runs-on: ubuntu-latest
+    # Dépend du job test. Cela signifie que le job build ne sera exécuté que si le job test réussit. 
+    # C'est une partie essentielle du pipeline CI/CD : on ne construit l'image Docker que si les tests passent.
+    needs: test
+
+    steps:
+
+      # On récupère à nouveau le code du repository pour pouvoir construire l'image Docker. Car on est sur une nouvelle machine virtuelle.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+      # Cette commande construit ton image Docker.  docker build -> crée une image Docker à partir du Dockerfile présent dans le repository.
+      # -t projet-fil-rouge:ci : tag de l'image Docker. Ici, on utilise le tag ci pour indiquer que c'est une image de test/CI.
+      # le . indique que le contexte de construction est le répertoire courant (où se trouve le Dockerfile).
+        run: |
+          docker build \
+            -t projet-fil-rouge:ci \
+            .
+      # C'est une étape très importante. Comme expliqué précédemment, deploy_local aura une autre machine. 
+      # On transforme donc l'image Docker en fichier : projet-fil-rouge.tar pour pouvoir la transférer entre les jobs.
+      - name: Save Docker image
+        run: |
+          docker save projet-fil-rouge:ci \
+            -o projet-fil-rouge.tar
+      
+      # GitHub va stocker temporairement le fichier. On donne à l'artifact le nom : projet-fil-rouge-image.
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: projet-fil-rouge-image
+          # On indique quel fichier doit être envoyé.
+          path: projet-fil-rouge.tar
+          # GitHub conserve l'artifact pendant 1 jour. Il est uniquement nécessaire pour faire passer l'image du job build au job deploy_local.
+          retention-days: 1
+
+
+  # ============================================================
+  # 3. DEPLOY LOCAL + SMOKE TEST
+  # download artifact (projet-fil-rouge.tar) -> docker load -> 
+  # docker run projet-fil-rouge:ci -> smoke test (curl)
+  # 
+  #!!!Important les 2 conteneurs (API + MySQL) doivent être sur le même réseau Docker
+  # ici todolist-network todolist-api <-> todolist-mysql 
+  # avec l'API qui écoute sur le port 3000 et MySQL sur le port 3306
+  # ============================================================
+  deploy_local:
+    name: "Local deploy (runner) + smoke test"
+    # Une nouvelle machine Ubuntu est créée.
+    runs-on: ubuntu-latest
+    # Le déploiement ne commence que si le build réussit. On a donc TEST -> BUILD -> DEPLOY_LOCAL. C'est le principe du pipeline CI/CD.
+    needs: build
+
+    steps:
+      # On récupère à nouveau le repository.
+      - name: Checkout code
+        uses: actions/checkout@v4
+      # Cette fois, on récupère l'artifact créé précédemment.
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: projet-fil-rouge-image
+      
+      # On transforme le fichier .tar en image Docker.
+      - name: Load Docker image
+      # Avant on avait  profil-fil-rouge.tar Apres on a Docker image projet-fil-rouge:ci
+      # C'est ce qui permet à deploy_local de lancer le conteneur Docker de l'application 
+      # construite dans le job build.
+        run: |
+          docker load \
+            -i projet-fil-rouge.tar
+      # On crée un réseau Docker appelé : todolist-network. 
+      # C'est important car l'API et MySQL doivent être sur le même réseau pour communiquer entre eux.
+      - name: Create Docker network
+        run: |
+          docker network create todolist-network
+
+      # ----------------------------------------------------------
+      # MySQL
+      # ici on lance un conteneur MySQL 5.7 avec le mot de passe root et la base de données todolist_db      
+      # ----------------------------------------------------------
+      - name: Run MySQL container
+        run: |
+          docker run -d \
+            --name todolist-mysql \
+            --network todolist-network \
+            -e MYSQL_ROOT_PASSWORD=root \
+            -e MYSQL_DATABASE=todolist_db \
+            --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -proot" \
+            --health-interval=5s \
+            --health-timeout=5s \
+            --health-retries=20 \
+            mysql:5.7
+
+      - name: Wait for MySQL health check
+        run: |
+          echo "Waiting for MySQL to be ready..."
+
+          for i in {1..30}; do
+            status=$(docker inspect \
+              --format='{{.State.Health.Status}}' \
+              todolist-mysql 2>/dev/null || echo "starting")
+
+            echo "MySQL health status: $status"
+
+            if [ "$status" = "healthy" ]; then
+              echo "MySQL is ready!"
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "MySQL did not become ready in time."
+          docker logs todolist-mysql
+          exit 1
+
+      # ----------------------------------------------------------
+      # API
+      # ici DB_HOST=todolist-mysql car le conteneur MySQL est sur le même réseau Docker que l'API
+      # ----------------------------------------------------------
+      - name: Run API container
+      # docker run -d lance le conteneur en arrière-plan.
+      # --name todolist-api : nom du conteneur.
+      # --network todolist-network : le conteneur est sur le même réseau que MySQL.
+      # -p 3000:3000 : le port 3000 du conteneur est mappé sur le port 3000 de la machine hôte (runner). Cela permet d'accéder à l'API via http://localhost:3000.
+      # -e : on définit les variables d'environnement pour que l'API puisse se connecter à MySQL.
+      # projet-fil-rouge:ci : c'est l'image Docker construite dans le job build.
+      # node_env=test : on indique à l'application qu'elle est en mode test pour qu'elle utilise la base de données de test.
+
+        run: |
+          docker run -d \
+            --name todolist-api \
+            --network todolist-network \
+            -p 3000:3000 \
+            -e DB_HOST=todolist-mysql \
+            -e DB_USER=root \
+            -e DB_PASSWORD=root \
+            -e DB_NAME=todolist_db \
+            -e DB_DIALECT=mysql \
+            -e PORT=3000 \
+            -e NODE_ENV=test \
+            projet-fil-rouge:ci
+
+      - name: Show API logs
+        run: |
+          sleep 2
+          docker logs todolist-api
+
+      # ----------------------------------------------------------
+      # API health / availability
+      # si l'API n'est pas disponible après 30 tentatives, 
+      # on affiche les logs de l'API et de MySQL pour aider au débogage.
+      # Sleep 2 secondes entre chaque tentative pour laisser le temps à l'API de démarrer.
+      # On appelle : GET /api/tasks avec curl pour vérifier que l'API est bien disponible.
+      # Les options : -f --> échoue si HTTP renvoie une erreur.
+      # -s --> silencieux, ne pas afficher la progression.
+      # -S --> affiche les erreurs si curl échoue.
+      # Bash /dev/null : on redirige la sortie standard vers /dev/null pour ne pas afficher le résultat de la commande curl.
+      # Si ça fonctionne : l'API est disponible et on sort avec exit 0. Sinon, on attend 2 secondes et on réessaie jusqu'à 30 fois.
+      # docker logs todolist-api : affiche les logs du conteneur API pour aider au débogage.
+      # docker logs todolist-mysql : affiche les logs du conteneur MySQL pour aider au débogage.
+      # exit 1 : on quitte avec un code d'erreur si l'API n'est pas disponible après 30 tentatives.
+      # ----------------------------------------------------------
+      - name: Wait for API to be reachable
+        run: |
+          echo "Waiting for API..."
+
+          for i in {1..30}; do
+
+            if curl -fsS \
+              http://localhost:3000/api/tasks \
+              > /dev/null; then
+
+              echo "API is reachable!"
+              exit 0
+            fi
+
+            echo "Waiting for API... ($i/30)"
+            sleep 2
+          done
+
+          echo "API is not reachable."
+
+          echo "===== API LOGS ====="
+          docker logs todolist-api
+
+          echo "===== MYSQL LOGS ====="
+          docker logs todolist-mysql
+
+          exit 1
+
+      # ----------------------------------------------------------
+      # Smoke test
+      # On fait maintenant un vrai test très simple de l'application.
+      # on appelle l'API avec curl pour vérifier que l'API est bien disponible et qu'elle renvoie un code HTTP 200.
+      # Cette fois, contrairement au test précédent, on affiche la réponse.
+      # On affiche un message indiquant que le smoke test a réussi.
+      # ----------------------------------------------------------
+      - name: Smoke test - GET /api/tasks
+        run: |
+          echo "Running smoke test..."
+
+          curl -fS \
+            http://localhost:3000/api/tasks
+
+          echo ""
+          echo "Smoke test passed!"
+
+      # ----------------------------------------------------------
+      # Cleanup
+      # Cette étape sert à supprimer les conteneurs après le test.
+      # ----------------------------------------------------------
+      - name: Cleanup
+        # if always() signifie que cette étape sera exécutée même si les étapes précédentes échouent. 
+        # Sans always(), le nettoyage pourrait ne pas être exécuté.
         if: always()
-        run: docker compose down -v
+        run: |
+          echo "Cleaning up containers..."
+
+          docker rm -f todolist-api || true
+          docker rm -f todolist-mysql || true
+          docker network rm todolist-network || true
 
 
 
 
-# name: CI/CD Local
-
+# name: ci-cd-lical
 # on:
-#   pull_request:
-#     branches: [main]
 #   push:
-#     branches: [main]
+#     branches:
+#       - main
+#   pull_request:
+#     branches:
+#       - main
 
 # jobs:
-#   # ---------------------------------------------------------------
-#   # Job 1 : tests unitaires + intégration avec MySQL éphémère
-#   # Se déclenche sur PR vers main ET sur push vers main
-#   # ---------------------------------------------------------------
 #   test:
 #     runs-on: ubuntu-latest
-
 #     services:
 #       db:
 #         image: mysql:5.7
@@ -128,29 +406,22 @@ jobs:
 #       PORT: 3000
 
 #     steps:
-#       - name: Checkout du code
-#         uses: actions/checkout@v4
+#     - name: Checkout du code
+#       uses: actions/checkout@v4
 
-#       - name: Setup Node.js
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: '20'
-#           cache: npm
+#     - name: Setup Node.js
+#       uses: actions/setup-node@v4
+#       with:
+#         node-version: '20'
+#         cache: npm
 
-#       - name: Installer les dépendances
-#         run: npm ci
+#     - name: Installer les dépendances
+#       run: npm ci
 
-#       - name: Attendre que MySQL soit prêt
-#         run: |
-#           until mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -p"$DB_PASSWORD" --silent; do
-#             echo "En attente de MySQL..."
-#             sleep 2
-#           done
+#     - name: Lancer les tests unitaires + intégration
+#       run: npm test
 
-#       - name: Lancer les tests unitaires + intégration
-#         run: npm test
-
-#   # ---------------------------------------------------------------
+#    # ---------------------------------------------------------------
 #   # Job 2 : build + déploiement local via docker compose + smoke test
 #   # Ne se déclenche QUE sur push vers main, ET seulement si "test" a réussi
 #   # (needs: test => si test échoue, ce job est automatiquement skippé)
@@ -159,34 +430,23 @@ jobs:
 #     needs: test
 #     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 #     runs-on: ubuntu-latest
-
+ 
 #     env:
+#       DB_HOST: db
 #       DB_USER: ${{ secrets.DB_USER }}
 #       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
 #       DB_NAME: ${{ secrets.DB_NAME }}
-
+ 
 #     steps:
 #       - name: Checkout du code
 #         uses: actions/checkout@v4
-
+ 
 #       - name: Build + démarrage via docker compose
 #         run: docker compose up -d --build
-
-#       - name: Attendre que l'appli et sa DB soient healthy
-#         run: |
-#           for i in $(seq 1 30); do
-#             status=$(docker inspect --format='{{.State.Health.Status}}' mysql-container 2>/dev/null || echo "starting")
-#             if [ "$status" = "healthy" ]; then
-#               echo "DB healthy."
-#               break
-#             fi
-#             echo "En attente de la DB ($status)..."
-#             sleep 3
-#           done
-
+ 
 #       - name: Attendre le démarrage du backend
 #         run: sleep 10
-
+ 
 #       - name: Smoke test HTTP
 #         run: |
 #           curl -sf http://localhost:3000/api/tasks || {
@@ -194,7 +454,8 @@ jobs:
 #             docker compose logs app
 #             exit 1
 #           }
-
+ 
 #       - name: Nettoyage
 #         if: always()
 #         run: docker compose down -v
+
